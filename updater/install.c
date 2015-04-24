@@ -45,8 +45,12 @@
 #include "mtdutils/mounts.h"
 #include "mtdutils/mtdutils.h"
 #include "updater.h"
+#include "applypatch/applypatch.h"
+#include "flashutils/flashutils.h"
 #include "install.h"
+#ifdef HAVE_LIBTUNE2FS
 #include "tune2fs.h"
+#endif
 
 #ifdef USE_EXT4
 #include "make_ext4fs.h"
@@ -1062,65 +1066,13 @@ Value* WriteRawImageFn(const char* name, State* state, int argc, Expr* argv[]) {
         goto done;
     }
 
-    mtd_scan_partitions();
-    const MtdPartition* mtd = mtd_find_partition_by_name(partition);
-    if (mtd == NULL) {
-        printf("%s: no mtd partition named \"%s\"\n", name, partition);
+    char* filename = contents->data;
+    if (0 == restore_raw_partition(NULL, partition, filename))
+        result = strdup(partition);
+    else {
         result = strdup("");
         goto done;
     }
-
-    MtdWriteContext* ctx = mtd_write_partition(mtd);
-    if (ctx == NULL) {
-        printf("%s: can't write mtd partition \"%s\"\n",
-                name, partition);
-        result = strdup("");
-        goto done;
-    }
-
-    bool success;
-
-    if (contents->type == VAL_STRING) {
-        // we're given a filename as the contents
-        char* filename = contents->data;
-        FILE* f = fopen(filename, "rb");
-        if (f == NULL) {
-            printf("%s: can't open %s: %s\n",
-                    name, filename, strerror(errno));
-            result = strdup("");
-            goto done;
-        }
-
-        success = true;
-        char* buffer = malloc(BUFSIZ);
-        int read;
-        while (success && (read = fread(buffer, 1, BUFSIZ, f)) > 0) {
-            int wrote = mtd_write_data(ctx, buffer, read);
-            success = success && (wrote == read);
-        }
-        free(buffer);
-        fclose(f);
-    } else {
-        // we're given a blob as the contents
-        ssize_t wrote = mtd_write_data(ctx, contents->data, contents->size);
-        success = (wrote == contents->size);
-    }
-    if (!success) {
-        printf("mtd_write_data to %s failed: %s\n",
-                partition, strerror(errno));
-    }
-
-    if (mtd_erase_blocks(ctx, -1) == -1) {
-        printf("%s: error erasing blocks of %s\n", name, partition);
-    }
-    if (mtd_write_close(ctx) != 0) {
-        printf("%s: error closing write of %s\n", name, partition);
-    }
-
-    printf("%s %s partition\n",
-           success ? "wrote" : "failed to write", partition);
-
-    result = success ? partition : strdup("");
 
 done:
     if (result != partition) FreeValue(partition_value);
@@ -1541,6 +1493,7 @@ Value* EnableRebootFn(const char* name, State* state, int argc, Expr* argv[]) {
 }
 
 Value* Tune2FsFn(const char* name, State* state, int argc, Expr* argv[]) {
+#ifdef HAVE_LIBTUNE2FS
     if (argc == 0) {
         return ErrorAbort(state, "%s() expects args, got %d", name, argc);
     }
@@ -1569,6 +1522,9 @@ Value* Tune2FsFn(const char* name, State* state, int argc, Expr* argv[]) {
         return ErrorAbort(state, "%s() returned error code %d", name, result);
     }
     return StringValue(strdup("t"));
+#else
+    return ErrorAbort(state, "%s() support not present, no libtune2fs", name);
+#endif // HAVE_LIBTUNE2FS
 }
 
 void RegisterInstallFunctions() {
